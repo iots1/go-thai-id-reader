@@ -1,6 +1,11 @@
 id-reader-mac
 id-reader.exe
 
+# Build output
+dist/
+go-thai-id-api*
+!go-thai-id-api/
+
 # Binary Files
 # Compiled binaries/executable files
 *.exe

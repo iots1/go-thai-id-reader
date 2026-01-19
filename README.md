@@ -51,39 +51,49 @@ cd go-thai-id-api
 go mod download
 ```
 
-## Building
+## Building from Source
 
-### macOS
+> **Note:** This project requires CGO due to the `scard` library dependency.
+> Cross-compilation is not supported. Each platform must be built on its native OS.
 
-```bash
-# Build for current architecture
-go build -o thaiid main.go
-
-# Build for specific architecture
-go build -o thaiid-arm64 main.go        # Apple Silicon
-go build -o thaiid-amd64 main.go        # Intel Mac
-```
-
-### Linux
+### Using Makefile (Recommended)
 
 ```bash
-# Build for current architecture
-go build -o thaiid main.go
+# Build for current platform
+make build
 
-# Build for specific architecture
-GOOS=linux GOARCH=amd64 go build -o thaiid-amd64 main.go
-GOOS=linux GOARCH=arm64 go build -o thaiid-arm64 main.go
+# Build and create release package
+make package
+
+# Clean build artifacts
+make clean
+
+# Show all available commands
+make help
 ```
 
-### Windows
+### Manual Build
 
 ```bash
-# Build for Windows (from Windows machine)
-go build -o thaiid.exe main.go
+# macOS / Linux
+CGO_ENABLED=1 go build -o go-thai-id-api main.go
 
-# Cross-compile from Linux/macOS
-GOOS=windows GOARCH=amd64 go build -o thaiid.exe main.go
+# Windows (from Windows)
+set CGO_ENABLED=1
+go build -o go-thai-id-api.exe main.go
 ```
+
+### Creating a Release
+
+```bash
+# Tag and push to trigger GitHub Actions
+git tag v1.0.0
+git push origin v1.0.0
+
+# Or manually trigger from GitHub Actions page
+```
+
+GitHub Actions will automatically build for all platforms and create a release.
 
 ## Running
 
@@ -219,11 +229,67 @@ else:
 
 ```
 .
-├── main.go              # Main application
-├── go.mod              # Go module definition
-├── go.sum              # Go dependency checksums
-└── README.md           # This file
+├── main.go                          # Main application
+├── go.mod                           # Go module definition
+├── go.sum                           # Go dependency checksums
+├── Makefile                         # Build automation
+├── README.md                        # This file
+├── .github/
+│   └── workflows/
+│       └── release.yml              # GitHub Actions for auto-release
+└── scripts/
+    ├── install.bat                  # Windows installer
+    ├── uninstall.bat                # Windows uninstaller
+    ├── install.sh                   # macOS installer
+    └── uninstall.sh                 # macOS uninstaller
 ```
+
+## Pre-built Binaries (Recommended)
+
+Download pre-built binaries from the [Releases](../../releases) page.
+
+| Platform | Architecture | Download |
+|----------|-------------|----------|
+| Windows | 64-bit | `go-thai-id-api-windows-amd64.zip` |
+| macOS | Apple Silicon (M1/M2/M3) | `go-thai-id-api-darwin-arm64.tar.gz` |
+| macOS | Intel | `go-thai-id-api-darwin-amd64.tar.gz` |
+
+### Quick Installation
+
+**Windows:**
+```batch
+# 1. Download and extract go-thai-id-api-windows-amd64.zip
+# 2. Right-click install.bat > Run as Administrator
+```
+
+**macOS:**
+```bash
+# 1. Download the appropriate .tar.gz file
+tar -xzf go-thai-id-api-darwin-arm64.tar.gz  # Apple Silicon
+# or
+tar -xzf go-thai-id-api-darwin-amd64.tar.gz  # Intel
+
+# 2. Run installer
+./install.sh
+```
+
+### What the installer does
+
+**Windows (`install.bat`):**
+- Installs to `C:\Program Files\GoThaiIDAPI\`
+- Creates Windows Service (auto-start on boot)
+- Opens firewall port 8080
+
+**macOS (`install.sh`):**
+- Installs to `/usr/local/bin/`
+- Creates LaunchAgent (auto-start on login)
+- Logs stored in `~/Library/Logs/GoThaiIDAPI/`
+
+### Uninstallation
+
+**Windows:** Run `uninstall.bat` as Administrator
+
+**macOS:** Run `./uninstall.sh`
 
 ## Troubleshooting
 

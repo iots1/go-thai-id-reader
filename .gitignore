@@ -1,0 +1,62 @@
+id-reader-mac
+id-reader.exe
+
+# Binary Files
+# Compiled binaries/executable files
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Binaries for programs and plugins
+bin/
+# If you name your output binary 'main'
+main
+
+# Test binaries
+*.test
+
+# Output of 'go install' is normally into $GOPATH/bin or $GOBIN
+
+# -----------------------------------------------------------------------
+# Dependency Directories
+# -----------------------------------------------------------------------
+# While committing 'vendor/' is common in some teams, many prefer to 
+# ignore it and let 'go mod download' handle it.
+# vendor/
+
+# -----------------------------------------------------------------------
+# IDE and Editor Files
+# -----------------------------------------------------------------------
+# JetBrains (GoLand, IntelliJ)
+.idea/
+
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# Vim swap files
+[._]*.s[a-v][a-z]
+[._]*.sw[a-p]
+[._]s[a-rt-v][a-z]
+[._]ss[a-gi-z]
+
+# -----------------------------------------------------------------------
+# Operating System Files
+# -----------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+
+# -----------------------------------------------------------------------
+# Testing and Coverage
+# -----------------------------------------------------------------------
+*.out
+*.prof
+coverage.txt
+
+# -----------------------------------------------------------------------
+# Environment and Secrets
+# -----------------------------------------------------------------------
+.env
+.env.local

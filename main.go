@@ -7,11 +7,13 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/ebfe/scard"
+	"github.com/joho/godotenv"
 	"golang.org/x/text/encoding/charmap"
 	"golang.org/x/text/transform"
 )
@@ -185,7 +187,24 @@ func readIDHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	http.HandleFunc("/api/read", readIDHandler)
-	fmt.Println("🚀 Go Thai ID API: http://localhost:8080/api/read")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	if err := godotenv.Load(); err != nil {
+		log.Println("[main] .env not found, using existing environment")
+	}
+	initConfig()
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	if checkRedis() {
+		startCronJob()
+		startWorker()
+	} else {
+		log.Println("[main] WARNING: Redis ไม่พร้อมใช้งาน — ข้าม cronjob และ worker (API ยังทำงานได้ปกติ)")
+	}
+	http.HandleFunc("/api/v1/readers", readIDHandler)
+	http.HandleFunc("/api/v1/tokens", getTokensHandler)
+	fmt.Printf("Go Thai ID API Running at http://localhost:%s\n", port)
+	log.Fatal(http.ListenAndServe(":"+port, nil))
 }

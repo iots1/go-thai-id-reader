@@ -9,10 +9,11 @@ A Go application that reads Thai National ID cards using PC/SC smart card reader
 - Cross-platform support (macOS, Linux, Windows)
 - RESTful API with standardized response codes
 - CORS enabled for web integration
+- **[Optional]** BullMQ integration — forward NHSO patient tokens to a remote server via Redis
 
 ## Requirements
 
-- Go 1.25.6 or higher
+- Go 1.21 or higher
 - PC/SC compatible smart card reader
 - Thai National ID Card
 
@@ -51,6 +52,27 @@ cd go-thai-id-api
 go mod download
 ```
 
+## Configuration
+
+Copy `.env.example` to `.env` and adjust as needed:
+
+```bash
+cp .env.example .env
+```
+
+| Variable          | Default              | Description                          |
+|-------------------|----------------------|--------------------------------------|
+| `PORT`            | `8080`               | HTTP server port                     |
+| `TOKEN_FILE_PATH` | `./token.txt`        | Path to NHSO token file (see below)  |
+| `REDIS_ADDR`      | `127.0.0.1:6379`     | Redis address                        |
+| `REDIS_USER`      | `default`            | Redis username                       |
+| `REDIS_PASSWORD`  | _(empty)_            | Redis password                       |
+| `REDIS_DB`        | `0`                  | Redis database index                 |
+| `HIS_QUEUE_NAME`  | `srm-his`            | BullMQ queue name (HIS server)       |
+| `HIS_JOB_NAME`    | `add-srm-token`      | BullMQ job name (HIS server)         |
+| `WORKER_QUEUE_NAME` | `srm-go`           | BullMQ queue name (this worker)      |
+| `WORKER_JOB_NAME` | `request-token`      | BullMQ job name (this worker)        |
+
 ## Building from Source
 
 > **Note:** This project requires CGO due to the `scard` library dependency.
@@ -76,11 +98,11 @@ make help
 
 ```bash
 # macOS / Linux
-CGO_ENABLED=1 go build -o go-thai-id-api main.go
+CGO_ENABLED=1 go build -o go-thai-id-api .
 
 # Windows (from Windows)
 set CGO_ENABLED=1
-go build -o go-thai-id-api.exe main.go
+go build -o go-thai-id-api.exe .
 ```
 
 ### Creating a Release
@@ -89,8 +111,6 @@ go build -o go-thai-id-api.exe main.go
 # Tag and push to trigger GitHub Actions
 git tag v1.0.0
 git push origin v1.0.0
-
-# Or manually trigger from GitHub Actions page
 ```
 
 GitHub Actions will automatically build for all platforms and create a release.
@@ -101,27 +121,73 @@ GitHub Actions will automatically build for all platforms and create a release.
 
 ```bash
 # Run directly
-go run main.go
+go run .
 
 # Or run the compiled binary
-./thaiid
+./go-thai-id-api
 ```
 
-The API will be available at `http://localhost:8080/api/read`
+The API will be available at `http://localhost:8080`
 
 ```
-🚀 Go Thai ID API: http://localhost:8080/api/read
+Go Thai ID API Running at http://localhost:8080
 ```
+
+If Redis is not reachable at startup, the server will still run but cronjob and worker will be disabled:
+
+```
+[main] redis ping failed (127.0.0.1:6379): ...
+[main] WARNING: redis unavailable — cronjob and worker disabled (API still running)
+```
+
+## Optional: BullMQ / NHSO Token Integration
+
+This feature automates forwarding patient treatment-rights tokens from the [NHSO (สปสช)](https://www.nhso.go.th/) desktop software to a HIS (Hospital Information System) server.
+
+### How it works
+
+1. The NHSO desktop app writes a token file (`.txt`) after a patient inserts their ID card. The file contains `access_token` and `refresh_token` used to verify the patient's healthcare coverage.
+2. This service reads that token file every minute (**cronjob**) and also listens for on-demand trigger jobs (**worker**).
+3. The token is pushed as a BullMQ job into a Redis queue, where the HIS server picks it up to perform the coverage check.
+
+### Token file format
+
+The token file supports two formats:
+
+**Multi-line:**
+```
+access_token=eyJhbGciOi...
+refresh_token=eyJhbGciOi...
+```
+
+**Single-line:**
+```
+access_token=eyJhbGciOi... refresh_token=eyJhbGciOi...
+```
+
+### Requirements
+
+- Redis server
+- A BullMQ-compatible consumer running on the HIS server
+
+If Redis is not available, the application starts normally without the cronjob and worker. No configuration is required to disable this feature.
 
 ## API Usage
 
-### Endpoint
+### Endpoints
+
+| Method | Path               | Description               |
+|--------|--------------------|---------------------------|
+| `GET`  | `/api/v1/readers`  | Read inserted ID card     |
+| `GET`  | `/api/v1/tokens`   | Read current token file   |
+
+### Read ID Card
 
 ```
-GET http://localhost:8080/api/read
+GET http://localhost:8080/api/v1/readers
 ```
 
-### Success Response (Code: 200000)
+**Success Response (Code: 200000)**
 
 ```json
 {
@@ -139,45 +205,7 @@ GET http://localhost:8080/api/read
 }
 ```
 
-### Error Responses
-
-**No Reader Found (Code: 400002)**
-```json
-{
-  "code": 400002,
-  "message": "No card reader found",
-  "data": null
-}
-```
-
-**Card Unresponsive (Code: 400003)**
-```json
-{
-  "code": 400003,
-  "message": "Card unresponsive or not detected",
-  "data": null
-}
-```
-
-**PC/SC Context Failed (Code: 400001)**
-```json
-{
-  "code": 400001,
-  "message": "Failed to establish PC/SC context",
-  "data": null
-}
-```
-
-**Read Failed (Code: 400004)**
-```json
-{
-  "code": 400004,
-  "message": "Failed to read ID data from card",
-  "data": null
-}
-```
-
-### Status Codes
+**Error Responses**
 
 | Code   | Meaning                      |
 |--------|------------------------------|
@@ -187,23 +215,39 @@ GET http://localhost:8080/api/read
 | 400003 | Card Unresponsive            |
 | 400004 | Failed to Read ID Data       |
 
+### Read Token File
+
+```
+GET http://localhost:8080/api/v1/tokens
+```
+
+```json
+{
+  "code": 200,
+  "message": "ok",
+  "data": {
+    "access_token": "eyJhbGciOi...",
+    "refresh_token": "eyJhbGciOi..."
+  }
+}
+```
+
 ## Example Usage
 
 ### cURL
 
 ```bash
-curl http://localhost:8080/api/read
+curl http://localhost:8080/api/v1/readers
 ```
 
 ### JavaScript/Fetch
 
 ```javascript
-fetch('http://localhost:8080/api/read')
+fetch('http://localhost:8080/api/v1/readers')
   .then(res => res.json())
   .then(data => {
     if (data.code === 200000) {
       console.log('ID Card Data:', data.data);
-      console.log('Photo:', data.data.photo);
     } else {
       console.error('Error:', data.message);
     }
@@ -215,7 +259,7 @@ fetch('http://localhost:8080/api/read')
 ```python
 import requests
 
-response = requests.get('http://localhost:8080/api/read')
+response = requests.get('http://localhost:8080/api/v1/readers')
 data = response.json()
 
 if data['code'] == 200000:
@@ -229,22 +273,25 @@ else:
 
 ```
 .
-├── main.go                          # Main application
-├── go.mod                           # Go module definition
-├── go.sum                           # Go dependency checksums
-├── Makefile                         # Build automation
-├── README.md                        # This file
+├── main.go          # HTTP server, ID card reader
+├── cronjob.go       # Config, token parser, BullMQ job producer, cronjob
+├── worker.go        # BullMQ worker (listens for on-demand trigger jobs)
+├── go.mod
+├── go.sum
+├── .env.example
+├── Makefile
+├── README.md
 ├── .github/
 │   └── workflows/
-│       └── release.yml              # GitHub Actions for auto-release
+│       └── release.yml
 └── scripts/
-    ├── install.bat                  # Windows installer
-    ├── uninstall.bat                # Windows uninstaller
-    ├── install.sh                   # macOS installer
-    └── uninstall.sh                 # macOS uninstaller
+    ├── install.bat
+    ├── uninstall.bat
+    ├── install.sh
+    └── uninstall.sh
 ```
 
-## Pre-built Binaries (Recommended)
+## Pre-built Binaries
 
 Download pre-built binaries from the [Releases](../../releases) page.
 
@@ -305,39 +352,53 @@ tar -xzf go-thai-id-api-darwin-amd64.tar.gz  # Intel
 - Ensure the ID card is inserted correctly
 - Try removing and reinserting the card
 - Clean the card contacts
-- Try another card to verify reader functionality
 
 ### Permission denied on Linux
 
-- Add your user to the `pcscd` group:
-  ```bash
-  sudo usermod -a -G pcscd $USER
-  newgrp pcscd
-  ```
-- Or run with sudo
+```bash
+sudo usermod -a -G pcscd $USER
+newgrp pcscd
+```
 
 ### Build errors on Windows
 
 - Install Visual Studio Build Tools or MinGW
 - Ensure Windows SDK is installed
-- For cross-compilation, ensure CGO is properly configured
 
 ## Dependencies
 
 - `github.com/ebfe/scard` - Smart Card Interface
 - `golang.org/x/text` - Text encoding/decoding
+- `github.com/joho/godotenv` - .env file loader
+- `github.com/redis/go-redis/v9` - Redis client (optional feature)
 
 ## License
 
 MIT License
 
+Copyright (c) 2026 iots1
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
-
-## Support
-
-For issues and questions, please open an issue on the GitHub repository.
 
 ## Author
 

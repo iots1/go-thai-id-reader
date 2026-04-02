@@ -187,8 +187,9 @@ func readIDHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	if err := godotenv.Load(); err != nil {
-		log.Println("[main] .env not found, using existing environment")
+	envPath := `C:\Program Files (x86)\dudee\\.env`
+	if err := godotenv.Load(envPath); err != nil {
+		log.Printf("[main] .env not found at %s, using existing environment", envPath)
 	}
 	initConfig()
 

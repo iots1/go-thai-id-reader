@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +16,8 @@ import (
 )
 
 var (
+	defaultTokenFileContent = "access-token=1234234 refresh-token=testeste"
+
 	tokenFilePath   string
 	hisQueueName    string
 	hisJobName      string
@@ -34,7 +37,7 @@ func initConfig() {
 		return fallback
 	}
 
-	tokenFilePath   = getEnv("TOKEN_FILE_PATH", `token.txt`)
+	tokenFilePath   = getEnv("TOKEN_FILE_PATH", defaultTokenFilePath())
 	hisQueueName    = getEnv("HIS_QUEUE_NAME", "srm-his")
 	hisJobName      = getEnv("HIS_JOB_NAME", "add-srm-token")
 	workerQueueName = getEnv("WORKER_QUEUE_NAME", "srm-go")
@@ -43,11 +46,41 @@ func initConfig() {
 	redisUser       = getEnv("REDIS_USER", "default")
 	redisPassword   = getEnv("REDIS_PASSWORD", "")
 
+	if err := ensureTokenFile(tokenFilePath); err != nil {
+		log.Printf("[main] cannot prepare token file (%s): %v", tokenFilePath, err)
+	}
+
 	db, err := strconv.Atoi(getEnv("REDIS_DB", "0"))
 	if err != nil {
 		db = 0
 	}
 	redisDB = db
+}
+
+func defaultTokenFilePath() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "token.txt"
+	}
+	return filepath.Join(home, "Documents", "token.txt")
+}
+
+func ensureTokenFile(path string) error {
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, []byte(defaultTokenFileContent), 0644); err != nil {
+		return err
+	}
+
+	log.Printf("[main] token file created with default values at %s", path)
+	return nil
 }
 
 type TokenData struct {

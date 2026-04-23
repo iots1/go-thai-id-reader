@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -82,9 +83,23 @@ func transmit(card *scard.Card, cmd []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(res) >= 2 && res[len(res)-2] == 0x61 {
-		getResponse := []byte{0x00, 0xC0, 0x00, 0x00, res[len(res)-1]}
+	if len(res) < 2 {
+		return res, nil
+	}
+	sw1 := res[len(res)-2]
+	sw2 := res[len(res)-1]
+
+	// 0x61 XX — more data; fetch with GET RESPONSE
+	if sw1 == 0x61 {
+		getResponse := []byte{0x00, 0xC0, 0x00, 0x00, sw2}
 		return card.Transmit(getResponse)
+	}
+	// 0x6C XX — wrong Le; retry with exact length the card tells us
+	if sw1 == 0x6C {
+		retry := make([]byte, len(cmd))
+		copy(retry, cmd)
+		retry[len(retry)-1] = sw2
+		return card.Transmit(retry)
 	}
 	return res, nil
 }
@@ -120,6 +135,49 @@ func readPhoto(card *scard.Card) []byte {
 	return photoData
 }
 
+func listReadersHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	ctx, err := scard.EstablishContext()
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+		return
+	}
+	defer ctx.Release()
+	readers, err := ctx.ListReaders()
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]any{"readers": readers})
+}
+
+func trimSW(b []byte) []byte {
+	if len(b) >= 2 {
+		return b[:len(b)-2]
+	}
+	return b
+}
+
+func swOK(b []byte) bool {
+	return len(b) >= 2 && b[len(b)-2] == 0x90 && b[len(b)-1] == 0x00
+}
+
+func connectCard(ctx *scard.Context, reader string) (*scard.Card, error) {
+	// Thai ID cards use T=0; try exclusive first (needed by some readers like MT65)
+	protocols := []scard.Protocol{scard.ProtocolT0, scard.ProtocolAny}
+	modes := []scard.ShareMode{scard.ShareExclusive, scard.ShareShared}
+	for _, proto := range protocols {
+		for _, mode := range modes {
+			card, err := ctx.Connect(reader, mode, proto)
+			if err == nil {
+				return card, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("cannot connect to card on reader %q", reader)
+}
+
 func readIDHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -139,15 +197,30 @@ func readIDHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	card, err := ctx.Connect(readers[0], scard.ShareShared, scard.ProtocolAny)
-	if err != nil {
+	// Try each detected reader until one works
+	var card *scard.Card
+	for _, reader := range readers {
+		card, err = connectCard(ctx, reader)
+		if err == nil {
+			log.Printf("[reader] connected via %q", reader)
+			break
+		}
+		log.Printf("[reader] skip %q: %v", reader, err)
+	}
+	if card == nil {
 		resp := Response{Code: CodeCardUnresponsive, Message: "Card unresponsive or not detected"}
 		json.NewEncoder(w).Encode(resp)
 		return
 	}
 	defer card.Disconnect(scard.LeaveCard)
 
-	transmit(card, SELECT_APPLET)
+	selResp, err := transmit(card, SELECT_APPLET)
+	if err != nil || !swOK(selResp) {
+		log.Printf("[reader] SELECT_APPLET failed: err=%v resp=%X", err, selResp)
+		resp := Response{Code: CodeReadFail, Message: "Failed to select Thai ID applet — card may not be inserted or reader incompatible"}
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
 
 	cid, _ := transmit(card, CMD_CID)
 	nTH, _ := transmit(card, CMD_NAME_TH)
@@ -157,7 +230,7 @@ func readIDHandler(w http.ResponseWriter, r *http.Request) {
 	addr, _ := transmit(card, CMD_ADDRESS)
 	photo := readPhoto(card)
 
-	if cid == nil || len(cid) < 2 {
+	if len(cid) < 2 {
 		resp := Response{Code: CodeReadFail, Message: "Failed to read ID data from card"}
 		json.NewEncoder(w).Encode(resp)
 		return
@@ -168,13 +241,32 @@ func readIDHandler(w http.ResponseWriter, r *http.Request) {
 		photoBase64 = "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(photo)
 	}
 
+	gender := ""
+	if len(gen) >= 1 {
+		gender = map[byte]string{49: "ชาย", 50: "หญิง"}[gen[0]]
+	}
+
+	var nameTH, nameEN, birthDate, address string
+	if len(nTH) >= 2 {
+		nameTH = DecodeThai(trimSW(nTH))
+	}
+	if len(nEN) >= 2 {
+		nameEN = strings.TrimSpace(strings.ReplaceAll(string(trimSW(nEN)), "#", " "))
+	}
+	if len(dob) >= 2 {
+		birthDate = FormatBirthDate(trimSW(dob))
+	}
+	if len(addr) >= 2 {
+		address = DecodeThai(trimSW(addr))
+	}
+
 	result := IDData{
-		CID:       string(cid[:len(cid)-2]),
-		NameTH:    DecodeThai(nTH[:len(nTH)-2]),
-		NameEN:    strings.TrimSpace(strings.ReplaceAll(string(nEN[:len(nEN)-2]), "#", " ")),
-		BirthDate: FormatBirthDate(dob[:len(dob)-2]),
-		Gender:    map[byte]string{49: "ชาย", 50: "หญิง"}[gen[0]],
-		Address:   DecodeThai(addr[:len(addr)-2]),
+		CID:       string(trimSW(cid)),
+		NameTH:    nameTH,
+		NameEN:    nameEN,
+		BirthDate: birthDate,
+		Gender:    gender,
+		Address:   address,
 		Photo:     photoBase64,
 	}
 
@@ -186,7 +278,7 @@ func readIDHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-func main() {
+func runApp() error {
 	envPath := `C:\Program Files (x86)\dudee\\.env`
 	if err := godotenv.Load(envPath); err != nil {
 		log.Printf("[main] .env not found at %s, using existing environment", envPath)
@@ -205,7 +297,22 @@ func main() {
 		log.Println("[main] WARNING: Redis ไม่พร้อมใช้งาน — ข้าม cronjob และ worker (API ยังทำงานได้ปกติ)")
 	}
 	http.HandleFunc("/api/v1/readers", readIDHandler)
+	http.HandleFunc("/api/v1/devices", listReadersHandler)
 	http.HandleFunc("/api/v1/tokens", getTokensHandler)
 	fmt.Printf("Go Thai ID API Running at http://localhost:%s\n", port)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	return http.ListenAndServe(":"+port, nil)
+}
+
+func main() {
+	debugMode := flag.Bool("debug", false, "run without tray mode and keep the console visible")
+	flag.Parse()
+
+	if *debugMode {
+		if err := runApp(); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
+	runWithTray(runApp)
 }

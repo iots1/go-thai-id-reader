@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -278,6 +280,156 @@ func readIDHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+type CardAuthResponse struct {
+	AccessToken  string `json:"access_token"`
+	CSRFToken    string `json:"csrf_token"`
+	RefreshToken string `json:"refresh_token"`
+}
+
+func writeAuthError(w http.ResponseWriter, code int, message, detail string) {
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": map[string]interface{}{
+			"code":    code,
+			"message": message,
+		},
+		"errors": []map[string]interface{}{
+			{"message": detail},
+		},
+	})
+}
+
+func getMACAddress() string {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		if mac := iface.HardwareAddr.String(); mac != "" {
+			println("Using MAC address:", mac)
+			return mac
+		}
+	}
+	return ""
+}
+
+func callCitizenCardLogin(cid string) (*CardAuthResponse, int, error) {
+	body, _ := json.Marshal(map[string]string{
+		"national_id": cid,
+		"mac_address": getMACAddress(),
+	})
+
+	req, err := http.NewRequest(http.MethodPost, authBaseURL+"/auth/v1/citizen-card/login", bytes.NewReader(body))
+	if err != nil {
+		return nil, http.StatusInternalServerError, fmt.Errorf("internal server error")
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("[card-auth] auth service error: %v", err)
+		return nil, http.StatusServiceUnavailable, fmt.Errorf("auth service unavailable")
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		log.Printf("[card-auth] auth service returned %d: %s", resp.StatusCode, respBody)
+		return nil, resp.StatusCode, fmt.Errorf("authentication failed")
+	}
+
+	var authResp CardAuthResponse
+	if err := json.Unmarshal(respBody, &authResp); err != nil {
+		return nil, http.StatusInternalServerError, fmt.Errorf("invalid response from auth service")
+	}
+	return &authResp, http.StatusOK, nil
+}
+
+func cardAuthHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	ctx, err := scard.EstablishContext()
+	if err != nil {
+		log.Printf("[card-auth] establish context: %v", err)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		writeAuthError(w, http.StatusServiceUnavailable, "Card reader unavailable", "Card reader device not connected")
+		return
+	}
+	defer ctx.Release()
+
+	readers, _ := ctx.ListReaders()
+	if len(readers) == 0 {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		writeAuthError(w, http.StatusServiceUnavailable, "Card reader unavailable", "No card reader found")
+		return
+	}
+
+	var card *scard.Card
+	for _, reader := range readers {
+		card, err = connectCard(ctx, reader)
+		if err == nil {
+			log.Printf("[card-auth] connected via %q", reader)
+			break
+		}
+	}
+	if card == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		writeAuthError(w, http.StatusServiceUnavailable, "Card reader unavailable", "Cannot connect to card")
+		return
+	}
+	defer card.Disconnect(scard.LeaveCard)
+
+	selResp, err := transmit(card, SELECT_APPLET)
+	if err != nil || !swOK(selResp) {
+		log.Printf("[card-auth] SELECT_APPLET failed: err=%v resp=%X", err, selResp)
+		w.WriteHeader(http.StatusUnauthorized)
+		writeAuthError(w, http.StatusUnauthorized, "Card authentication failed", "Unable to read card data")
+		return
+	}
+
+	cidBytes, err := transmit(card, CMD_CID)
+	if err != nil || len(cidBytes) < 2 {
+		w.WriteHeader(http.StatusUnauthorized)
+		writeAuthError(w, http.StatusUnauthorized, "Card authentication failed", "Unable to read card data")
+		return
+	}
+
+	cid := strings.TrimSpace(string(trimSW(cidBytes)))
+	if cid == "" {
+		w.WriteHeader(http.StatusUnauthorized)
+		writeAuthError(w, http.StatusUnauthorized, "Card authentication failed", "Invalid card data")
+		return
+	}
+
+	log.Printf("[card-auth] authenticating CID %s…", cid[:4]+"*********")
+
+	authTokens, statusCode, authErr := callCitizenCardLogin(cid)
+	if authErr != nil {
+		w.WriteHeader(statusCode)
+		writeAuthError(w, statusCode, "Card authentication failed", authErr.Error())
+		return
+	}
+
+	json.NewEncoder(w).Encode(authTokens)
+}
+
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func runApp() error {
 	envPath := `C:\Program Files (x86)\dudee\\.env`
 	if err := godotenv.Load(envPath); err != nil {
@@ -296,11 +448,15 @@ func runApp() error {
 	} else {
 		log.Println("[main] WARNING: Redis ไม่พร้อมใช้งาน — ข้าม cronjob และ worker (API ยังทำงานได้ปกติ)")
 	}
-	http.HandleFunc("/api/v1/readers", readIDHandler)
-	http.HandleFunc("/api/v1/devices", listReadersHandler)
-	http.HandleFunc("/api/v1/tokens", getTokensHandler)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/readers", readIDHandler)
+	mux.HandleFunc("/api/v1/devices", listReadersHandler)
+	mux.HandleFunc("/api/v1/tokens", getTokensHandler)
+	mux.HandleFunc("/api/v1/card-auth", cardAuthHandler)
+
 	fmt.Printf("Go Thai ID API Running at http://localhost:%s\n", port)
-	return http.ListenAndServe(":"+port, nil)
+	return http.ListenAndServe(":"+port, corsMiddleware(mux))
 }
 
 func main() {

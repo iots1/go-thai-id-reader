@@ -27,6 +27,7 @@ var (
 	redisUser       string
 	redisPassword   string
 	redisDB         int
+	authBaseURL     string
 )
 
 func initConfig() {
@@ -55,6 +56,8 @@ func initConfig() {
 		db = 0
 	}
 	redisDB = db
+
+	authBaseURL = getEnv("AUTH_BASE_URL", "https://api-meditech-dev.dudee-indeed.com")
 }
 
 func defaultTokenFilePath() string {

@@ -8,9 +8,10 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"os"
+	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -25,7 +26,7 @@ type Response struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 	Data    *IDData `json:"data,omitempty"`
-}
+}	
 
 type IDData struct {
 	CID       string `json:"cid"`
@@ -298,27 +299,38 @@ func writeAuthError(w http.ResponseWriter, code int, message, detail string) {
 	})
 }
 
-func getMACAddress() string {
-	interfaces, err := net.Interfaces()
-	if err != nil {
+func getSMBIOSGUID() string {
+	var (
+		out []byte
+		err error
+	)
+	switch runtime.GOOS {
+	case "windows":
+		out, err = exec.Command("powershell", "-NoProfile", "-Command",
+			"(Get-CimInstance -ClassName Win32_ComputerSystemProduct).UUID").Output()
+	case "linux":
+		out, err = os.ReadFile("/sys/class/dmi/id/product_uuid")
+	case "darwin":
+		out, err = exec.Command("sh", "-c",
+			`ioreg -d2 -c IOPlatformExpertDevice | awk -F\" '/IOPlatformUUID/{print $(NF-1)}'`).Output()
+	default:
 		return ""
 	}
-	for _, iface := range interfaces {
-		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
-			continue
-		}
-		if mac := iface.HardwareAddr.String(); mac != "" {
-			println("Using MAC address:", mac)
-			return mac
-		}
+	if err != nil {
+		log.Printf("[smbios] failed to read SMBIOS GUID: %v", err)
+		return ""
 	}
-	return ""
+	guid := strings.TrimSpace(string(out))
+	if guid != "" {
+		log.Printf("[smbios] using SMBIOS GUID: %s", guid)
+	}
+	return guid
 }
 
 func callCitizenCardLogin(cid string) (*CardAuthResponse, int, error) {
 	body, _ := json.Marshal(map[string]string{
 		"national_id": cid,
-		"mac_address": getMACAddress(),
+		"smbios_guid": getSMBIOSGUID(),
 	})
 
 	req, err := http.NewRequest(http.MethodPost, authBaseURL+"/auth/v1/citizen-card/login", bytes.NewReader(body))

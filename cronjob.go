@@ -47,8 +47,10 @@ func initConfig() {
 	redisUser       = getEnv("REDIS_USER", "default")
 	redisPassword   = getEnv("REDIS_PASSWORD", "")
 
-	if err := ensureTokenFile(tokenFilePath); err != nil {
+	if resolved, err := ensureTokenFile(tokenFilePath); err != nil {
 		log.Printf("[main] cannot prepare token file (%s): %v", tokenFilePath, err)
+	} else {
+		tokenFilePath = resolved
 	}
 
 	db, err := strconv.Atoi(getEnv("REDIS_DB", "0"))
@@ -68,22 +70,30 @@ func defaultTokenFilePath() string {
 	return filepath.Join(home, "Documents", "token.txt")
 }
 
-func ensureTokenFile(path string) error {
+func ensureTokenFile(path string) (string, error) {
 	if _, err := os.Stat(path); err == nil {
-		return nil
+		return path, nil
 	} else if !os.IsNotExist(err) {
-		return err
+		return path, err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(path, []byte(defaultTokenFileContent), 0644); err != nil {
-		return err
+	documentsPath := defaultTokenFilePath()
+	if documentsPath != path {
+		if _, err := os.Stat(documentsPath); err == nil {
+			log.Printf("[main] token file %s missing, falling back to %s", path, documentsPath)
+			return documentsPath, nil
+		}
 	}
 
-	log.Printf("[main] token file created with default values at %s", path)
-	return nil
+	if err := os.MkdirAll(filepath.Dir(documentsPath), 0755); err != nil {
+		return path, err
+	}
+	if err := os.WriteFile(documentsPath, []byte(defaultTokenFileContent), 0644); err != nil {
+		return path, err
+	}
+
+	log.Printf("[main] token file created with default values at %s", documentsPath)
+	return documentsPath, nil
 }
 
 type TokenData struct {

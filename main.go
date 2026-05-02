@@ -442,10 +442,11 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+const envFilePath = `C:\Program Files (x86)\dudee\.env`
+
 func runApp() error {
-	envPath := `C:\Program Files (x86)\dudee\\.env`
-	if err := godotenv.Load(envPath); err != nil {
-		log.Printf("[main] .env not found at %s, using existing environment", envPath)
+	if err := godotenv.Load(envFilePath); err != nil {
+		log.Printf("[main] .env not found at %s, using existing environment", envFilePath)
 	}
 	initConfig()
 

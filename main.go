@@ -140,7 +140,6 @@ func readPhoto(card *scard.Card) []byte {
 
 func listReadersHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	ctx, err := scard.EstablishContext()
 	if err != nil {
 		json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
@@ -183,7 +182,6 @@ func connectCard(ctx *scard.Context, reader string) (*scard.Card, error) {
 
 func readIDHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	ctx, err := scard.EstablishContext()
 	if err != nil {
@@ -429,17 +427,29 @@ func cardAuthHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(authTokens)
 }
 
-func corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+func corsMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if len(allowedOrigins) > 0 {
+				origin := r.Header.Get("Origin")
+				for _, o := range allowedOrigins {
+					if o == origin {
+						w.Header().Set("Access-Control-Allow-Origin", origin)
+						break
+					}
+				}
+			} else {
+				w.Header().Set("Access-Control-Allow-Origin", "*")
+			}
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 const envFilePath = `C:\Program Files (x86)\dudee\.env`
@@ -469,7 +479,7 @@ func runApp() error {
 	mux.HandleFunc("/api/v1/card-auth", cardAuthHandler)
 
 	fmt.Printf("Go Thai ID API Running at http://localhost:%s\n", port)
-	return http.ListenAndServe(":"+port, corsMiddleware(mux))
+	return http.ListenAndServe(":"+port, corsMiddleware(allowOrigins)(mux))
 }
 
 func main() {

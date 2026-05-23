@@ -28,6 +28,7 @@ var (
 	redisPassword   string
 	redisDB         int
 	authBaseURL     string
+	allowOrigins    []string
 )
 
 func initConfig() {
@@ -60,6 +61,16 @@ func initConfig() {
 	redisDB = db
 
 	authBaseURL = getEnv("AUTH_BASE_URL", "https://api-meditech-dev.dudee-indeed.com")
+
+	originsStr := getEnv("ALLOW_ORIGINS", "")
+	if originsStr != "" {
+		for _, o := range strings.Split(originsStr, ",") {
+			o = strings.TrimSpace(o)
+			if o != "" {
+				allowOrigins = append(allowOrigins, o)
+			}
+		}
+	}
 }
 
 func defaultTokenFilePath() string {
@@ -209,7 +220,6 @@ func runTokenJob() {
 
 func getTokensHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)

@@ -60,7 +60,7 @@ func initConfig() {
 	}
 	redisDB = db
 
-	authBaseURL = getEnv("AUTH_BASE_URL", "https://api-meditech-dev.dudee-indeed.com")
+	authBaseURL = getEnv("AUTH_BASE_URL", "YOUR_AUTH_BASE_URL")
 
 	originsStr := getEnv("ALLOW_ORIGINS", "")
 	if originsStr != "" {

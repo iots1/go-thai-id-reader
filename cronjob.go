@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +16,8 @@ import (
 )
 
 var (
+	defaultTokenFileContent = "access-token=1234234 refresh-token=testeste"
+
 	tokenFilePath   string
 	hisQueueName    string
 	hisJobName      string
@@ -24,6 +27,8 @@ var (
 	redisUser       string
 	redisPassword   string
 	redisDB         int
+	authBaseURL     string
+	allowOrigins    []string
 )
 
 func initConfig() {
@@ -34,7 +39,7 @@ func initConfig() {
 		return fallback
 	}
 
-	tokenFilePath   = getEnv("TOKEN_FILE_PATH", `token.txt`)
+	tokenFilePath   = getEnv("TOKEN_FILE_PATH", defaultTokenFilePath())
 	hisQueueName    = getEnv("HIS_QUEUE_NAME", "srm-his")
 	hisJobName      = getEnv("HIS_JOB_NAME", "add-srm-token")
 	workerQueueName = getEnv("WORKER_QUEUE_NAME", "srm-go")
@@ -43,11 +48,63 @@ func initConfig() {
 	redisUser       = getEnv("REDIS_USER", "default")
 	redisPassword   = getEnv("REDIS_PASSWORD", "")
 
+	if resolved, err := ensureTokenFile(tokenFilePath); err != nil {
+		log.Printf("[main] cannot prepare token file (%s): %v", tokenFilePath, err)
+	} else {
+		tokenFilePath = resolved
+	}
+
 	db, err := strconv.Atoi(getEnv("REDIS_DB", "0"))
 	if err != nil {
 		db = 0
 	}
 	redisDB = db
+
+	authBaseURL = getEnv("AUTH_BASE_URL", "YOUR_AUTH_BASE_URL")
+
+	originsStr := getEnv("ALLOW_ORIGINS", "")
+	if originsStr != "" {
+		for _, o := range strings.Split(originsStr, ",") {
+			o = strings.TrimSpace(o)
+			if o != "" {
+				allowOrigins = append(allowOrigins, o)
+			}
+		}
+	}
+}
+
+func defaultTokenFilePath() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "token.txt"
+	}
+	return filepath.Join(home, "Documents", "token.txt")
+}
+
+func ensureTokenFile(path string) (string, error) {
+	if _, err := os.Stat(path); err == nil {
+		return path, nil
+	} else if !os.IsNotExist(err) {
+		return path, err
+	}
+
+	documentsPath := defaultTokenFilePath()
+	if documentsPath != path {
+		if _, err := os.Stat(documentsPath); err == nil {
+			log.Printf("[main] token file %s missing, falling back to %s", path, documentsPath)
+			return documentsPath, nil
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(documentsPath), 0755); err != nil {
+		return path, err
+	}
+	if err := os.WriteFile(documentsPath, []byte(defaultTokenFileContent), 0644); err != nil {
+		return path, err
+	}
+
+	log.Printf("[main] token file created with default values at %s", documentsPath)
+	return documentsPath, nil
 }
 
 type TokenData struct {
@@ -163,7 +220,6 @@ func runTokenJob() {
 
 func getTokensHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)

@@ -123,6 +123,9 @@ GitHub Actions will automatically build for all platforms and create a release.
 # Run directly
 go run .
 
+# Run without tray mode and keep the console visible
+go run . --debug
+
 # Or run the compiled binary
 ./go-thai-id-api
 ```

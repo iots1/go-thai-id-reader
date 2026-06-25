@@ -430,19 +430,36 @@ func cardAuthHandler(w http.ResponseWriter, r *http.Request) {
 func corsMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if len(allowedOrigins) > 0 {
-				origin := r.Header.Get("Origin")
+			origin := r.Header.Get("Origin")
+			if len(allowedOrigins) == 0 {
+				w.Header().Set("Access-Control-Allow-Origin", "*")
+			} else {
 				for _, o := range allowedOrigins {
+					if o == "*" {
+						// wildcard: echo origin back so it works with credentials too
+						if origin != "" {
+							w.Header().Set("Access-Control-Allow-Origin", origin)
+							w.Header().Set("Vary", "Origin")
+						} else {
+							w.Header().Set("Access-Control-Allow-Origin", "*")
+						}
+						break
+					}
 					if o == origin {
 						w.Header().Set("Access-Control-Allow-Origin", origin)
+						w.Header().Set("Vary", "Origin")
 						break
 					}
 				}
-			} else {
-				w.Header().Set("Access-Control-Allow-Origin", "*")
 			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			// echo whatever custom headers the client requests in preflight,
+			// fall back to a sane default list
+			if reqHeaders := r.Header.Get("Access-Control-Request-Headers"); reqHeaders != "" {
+				w.Header().Set("Access-Control-Allow-Headers", reqHeaders)
+			} else {
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-Id, X-Trace-Id")
+			}
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)
 				return
